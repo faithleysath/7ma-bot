@@ -1,37 +1,117 @@
-from curl_cffi import AsyncSession
-from typing import Any, cast
+"""SevenMA Python SDK — single-file async version (curl_cffi)."""
+
+from __future__ import annotations
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from curl_cffi.requests import AsyncSession
+from datetime import datetime
+from typing import Any, Literal, cast
 import base64
 import json
 import time
 import random
 
+HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "TRACE", "PATCH"]
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class SevenMAError(Exception):
+    """Base error for this SDK."""
+
+
+class APIHTTPError(SevenMAError):
+    """Raised when the HTTP layer fails or returns non-2xx."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        payload: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.payload = payload
+
+
+class APIStatusError(SevenMAError):
+    """Raised when ``status_code`` in API JSON payload is not expected."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        payload: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload
+
+
+class UnauthorizedError(APIStatusError):
+    """Raised when token is invalid or expired (401)."""
+
+
+class CaptchaRequiredError(APIStatusError):
+    """Raised when API returns anti-bot challenge status_code=40301."""
+
+
+class RateLimitError(APIStatusError):
+    """Raised when API signals rate limiting or temporary outage (429/600)."""
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
 def decode_jwt_payload(token: str) -> dict[str, Any]:
-    # JWT 结构是 Header.Payload.Signature
-    _, payload_b64, _ = token.split('.')
-    
-    # 补齐 Base64 填充符 '='
+    """Decode JWT payload without signature verification."""
+    _, payload_b64, _ = token.split(".")
     missing_padding = len(payload_b64) % 4
     if missing_padding:
-        payload_b64 += '=' * (4 - missing_padding)
-        
-    payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+        payload_b64 += "=" * (4 - missing_padding)
+    payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
     return json.loads(payload_json)
+
 
 def generate_trace_id() -> str:
     e = int(time.time() * 1000)
     template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
     out: list[str] = []
-
     for ch in template:
         if ch in ("x", "y"):
             n = int((e + 16 * random.random()) % 16)
             e //= 16
             v = n if ch == "x" else (n & 0x3) | 0x8
             out.append(f"{v:x}")
-
+        else:
+            out.append(ch)
     return "".join(out)
 
+
+# ---------------------------------------------------------------------------
+# WebSocket biz IDs
+# ---------------------------------------------------------------------------
+
+WS_BIZ_IDS: dict[str, int] = {
+    "in_fences": 3004,
+    "order_state": 3005,
+    "car_location": 3006,
+}
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
+
 class SevenMaClient:
+    """Async client for 7ma auth / location / map endpoints (curl_cffi)."""
 
     def __init__(
         self,
@@ -47,7 +127,13 @@ class SevenMaClient:
         client: str = "Wechat_MiniAPP",
         x_app_id: str = "default",
         app_version: str = "1.3.165",
-        user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Mac MacWechat/WMPF MacWechat/3.8.7(0x13080712) UnifiedPCMacWechat(0xf2641721) XWEB/18788"
+        user_agent: str = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 "
+            "MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Mac "
+            "MacWechat/WMPF MacWechat/3.8.7(0x13080712) "
+            "UnifiedPCMacWechat(0xf2641721) XWEB/18788"
+        ),
     ):
         self.base_url = base_url.rstrip("/")
         self.auth_base_url = auth_base_url.rstrip("/")
@@ -55,7 +141,7 @@ class SevenMaClient:
 
         self.session = session or AsyncSession()
 
-        self.token = token
+        self.token: str | None = token
         self.token_expire_time_ms: int | None = None
         self.user_id: int | None = None
         self.phone_number: str | None = None
@@ -77,7 +163,9 @@ class SevenMaClient:
         self.app_version = app_version
         self.user_agent = user_agent
 
-    def set_token(self, token: str):
+    # -- token helpers -------------------------------------------------------
+
+    def set_token(self, token: str) -> None:
         self.token = token
         payload = decode_jwt_payload(token)
         self.user_id = payload.get("user_id")
@@ -86,6 +174,20 @@ class SevenMaClient:
         self.username = payload.get("username")
         self.nickname = payload.get("nickname")
         self.school_name = payload.get("school_name")
+
+    def clear_token(self) -> None:
+        self.token = None
+        self.token_expire_time_ms = None
+
+    def is_token_expired(self, *, now_ms: int | None = None, leeway_ms: int = 0) -> bool:
+        if not self.token:
+            return True
+        if self.token_expire_time_ms is None:
+            return False
+        current = now_ms if now_ms is not None else int(datetime.now().timestamp() * 1000)
+        return current + leeway_ms >= self.token_expire_time_ms
+
+    # -- header builders -----------------------------------------------------
 
     @property
     def headers(self) -> dict[str, str]:
@@ -108,7 +210,7 @@ class SevenMaClient:
         if self.genielamp_h_session:
             headers["genielamp-h-session"] = self.genielamp_h_session
         return headers
-    
+
     @property
     def auth_headers(self) -> dict[str, str]:
         return self.headers | {
@@ -116,67 +218,510 @@ class SevenMaClient:
             "u-user-id": str(self.user_id) if self.user_id else "",
         }
 
-    async def close(self):
+    # -- lifecycle -----------------------------------------------------------
+
+    async def close(self) -> None:
         await self.session.close()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "SevenMaClient":
         return self
-    
-    async def __aexit__(self, *_):
+
+    async def __aexit__(self, *_: Any) -> None:
         await self.close()
 
-    async def _post(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
-        resp = await self.session.post(url, json=payload, headers=headers, timeout=self.timeout)
-        self.x_trace_id = resp.headers.get("x-trace-id")
+    # -- generic request helper (with structured error handling) --------------
+
+    async def _request(
+        self,
+        method: HttpMethod,
+        path: str,
+        *,
+        service: str = "api",
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        allowed_status_codes: Iterable[int] | None = (200,),
+        timeout: float | None = None,
+        auth: bool = True,
+    ) -> Any:
+        url = self._build_url(service, path)
+        request_headers = self.auth_headers if auth else self.headers
+        if extra_headers:
+            request_headers.update(extra_headers)
+        timeout_val = self.timeout if timeout is None else timeout
+
+        try:
+            resp = await self.session.request(  # type: ignore[reportUnknownMemberType]
+                method=method,
+                url=url,
+                params=dict(params) if params else None,
+                json=dict(json_body) if json_body else None,
+                headers=request_headers,
+                timeout=timeout_val,
+            )
+        except Exception as exc:
+            raise APIHTTPError(f"HTTP request failed: {exc}") from exc
+
+        # update runtime headers from response
+        if "x-trace-id" in resp.headers:
+            self.x_trace_id = resp.headers["x-trace-id"]
         if "genielamp-h-session" in resp.headers:
             self.genielamp_h_session = resp.headers["genielamp-h-session"]
-        if resp.status_code != 200:
-            raise Exception(f"Failed to send request: {resp.status_code} {resp.text}")
-        return resp.json() # type: ignore[no-any-return]
 
-    async def send_sms(self, phone_number: str) -> dict[str, Any]:
-        url = f"{self.auth_base_url}/sms/send"
-        payload: dict[str, str | int] = {
-            "phone": phone_number,
-            "type": "login",
-            "scene": 1
+        payload = self._decode_response_payload(resp)
+        business_code = self._extract_status_code(payload)
+        message = self._extract_message(payload)
+
+        # 401 Unauthorized
+        if resp.status_code == 401 or business_code == 401:
+            self.clear_token()
+            raise UnauthorizedError(
+                message or "Unauthorized", status_code=401, payload=payload
+            )
+
+        # 40301 Captcha required
+        if business_code == 40301:
+            raise CaptchaRequiredError(
+                message or "Captcha required", status_code=40301, payload=payload
+            )
+
+        # 429 / 600 Rate limit
+        if resp.status_code == 429 or business_code in {429, 600}:
+            code = 429 if resp.status_code == 429 else (business_code or 429)
+            raise RateLimitError(
+                message or "Rate limited", status_code=code, payload=payload
+            )
+
+        # other HTTP-level errors
+        if resp.status_code >= 400:
+            raise APIHTTPError(
+                message or f"HTTP error {resp.status_code}",
+                http_status=resp.status_code,
+                payload=payload,
+            )
+
+        # business status_code validation
+        if allowed_status_codes is not None and business_code is not None:
+            allowed_set: set[int] = {int(c) for c in allowed_status_codes}
+            if business_code not in allowed_set:
+                raise APIStatusError(
+                    message or f"Unexpected status_code={business_code}",
+                    status_code=business_code,
+                    payload=payload,
+                )
+
+        return payload
+
+    # -- URL / response helpers ----------------------------------------------
+
+    def _build_url(self, service: str, path: str) -> str:
+        clean = path if path.startswith("/") else f"/{path}"
+        if service == "api":
+            return f"{self.base_url}{clean}"
+        if service == "auth":
+            return f"{self.auth_base_url}{clean}"
+        if service == "absolute":
+            return path
+        raise ValueError(f"Unknown service '{service}', expected api/auth/absolute")
+
+    @staticmethod
+    def _decode_response_payload(resp: Any) -> Any:
+        try:
+            return resp.json()
+        except (ValueError, TypeError):
+            return {"http_status": resp.status_code, "raw_text": resp.text}
+
+    @staticmethod
+    def _extract_status_code(payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+        d = cast(dict[str, Any], payload)
+        value = d.get("status_code")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    @staticmethod
+    def _extract_message(payload: Any) -> str:
+        if isinstance(payload, dict):
+            d = cast(dict[str, Any], payload)
+            msg = d.get("message")
+            if isinstance(msg, str):
+                return msg
+        return ""
+
+    def _save_token_from_payload(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        d = cast(dict[str, Any], payload)
+        data = d.get("data")
+        if not isinstance(data, dict):
+            return
+        dd = cast(dict[str, Any], data)
+        token = dd.get("token")
+        if isinstance(token, str) and token:
+            self.set_token(token)
+
+    # -----------------------------------------------------------------------
+    # Auth / login APIs
+    # -----------------------------------------------------------------------
+
+    async def send_sms(
+        self,
+        phone_number: str,
+        *,
+        scene: int = 1,
+        sms_type: str = "login",
+    ) -> Any:
+        """发送短信验证码。"""
+        payload: dict[str, Any] = {
+            "phone": phone_number.replace(" ", ""),
+            "type": sms_type,
+            "scene": scene,
         }
-        resp = await self._post(url, payload, self.headers)
-        return resp.get("data", {})
-    
-    async def login_with_sms(self, phone_number: str, code: str, device_id: str = "") -> str:
+        return await self._request(
+            "POST", "/sms/send",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes={200, 406},
+            auth=False,
+        )
+
+    async def login_with_sms(
+        self,
+        phone_number: str,
+        code: str,
+        device_id: str = "",
+        *,
+        force_new_account: bool = False,
+        restore_confirm: bool = False,
+    ) -> str:
+        """短信验证码登录，返回 token。"""
         if not device_id:
             device_id = self.phone_model + "_not_openid"
-        url = f"{self.auth_base_url}/login"
-        payload: dict[str, str | bool] = {
+        payload: dict[str, Any] = {
             "phone": phone_number,
             "code": code,
             "device_id": device_id,
             "login_type": "sms_code",
-            "force_new_account": False,
-            "restore_confirm": False
+            "force_new_account": force_new_account,
+            "restore_confirm": restore_confirm,
         }
-        resp = await self._post(url, payload, self.headers)
-        token: str = resp.get("data", {}).get("token")
+        resp = await self._request(
+            "POST", "/login",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes={200, 403001},
+            auth=False,
+        )
+        self._save_token_from_payload(resp)
+        token = self.token
         if not token:
-            raise Exception(f"Login response does not contain token: {resp}")
-        self.set_token(token)
+            raise APIStatusError(
+                f"Login response does not contain token: {resp}",
+                payload=resp,
+            )
         return token
 
-    
-async def main():
+    async def get_shared_key(self) -> Any:
+        """获取共享密钥。"""
+        return await self._request("GET", "/shared_key", service="auth")
+
+    # -----------------------------------------------------------------------
+    # Captcha APIs (40301)
+    # -----------------------------------------------------------------------
+
+    async def captcha_generate(
+        self,
+        *,
+        scene: str,
+        device_id: str,
+        login_key: str,
+        client_info: Mapping[str, Any],
+        captcha_type: str = "slider",
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "scene": scene,
+            "device_id": device_id,
+            "login_key": login_key,
+            "client_info": dict(client_info),
+            "type": captcha_type,
+        }
+        return await self._request(
+            "POST", "/captcha/polaris/captcha/generate",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes=None,
+        )
+
+    async def captcha_verify(
+        self,
+        *,
+        token: str,
+        position: Mapping[str, Any],
+        track: list[Mapping[str, Any]],
+        device_id: str,
+        duration: int,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "token": token,
+            "position": dict(position),
+            "track": [dict(item) for item in track],
+            "device_id": device_id,
+            "duration": duration,
+        }
+        return await self._request(
+            "POST", "/captcha/polaris/captcha/verify",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes=None,
+        )
+
+    async def captcha_validate(self, *, verify_token: str, login_key: str) -> Any:
+        return await self._request(
+            "GET", "/captcha/validate",
+            service="auth",
+            params={"token": verify_token, "login_key": login_key},
+            allowed_status_codes=None,
+        )
+
+    # -----------------------------------------------------------------------
+    # Location APIs
+    # -----------------------------------------------------------------------
+
+    async def get_new_surrounding_cars(
+        self, *, latitude: float, longitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", "/new/surrounding/car",
+            params={"latitude": latitude, "longitude": longitude},
+        )
+
+    async def get_surrounding_cars(
+        self, *, latitude: float, longitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", "/surrounding/car",
+            params={"latitude": latitude, "longitude": longitude},
+        )
+
+    async def get_car_location(
+        self,
+        *,
+        car_number: str,
+        longitude: float | None = None,
+        latitude: float | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {}
+        if longitude is not None:
+            params["longitude"] = longitude
+        if latitude is not None:
+            params["latitude"] = latitude
+        return await self._request(
+            "GET", f"/car/{car_number}/location",
+            params=params or None,
+        )
+
+    async def get_car_detail(self, *, car_number: str) -> Any:
+        return await self._request("GET", f"/car/{car_number}")
+
+    async def get_car_lock_status(self, *, car_number: str) -> Any:
+        return await self._request("GET", f"/car/{car_number}/lockStatus")
+
+    async def get_user_car_authority(self) -> Any:
+        return await self._request("GET", "/user/car_authority")
+
+    # -----------------------------------------------------------------------
+    # Map / fence APIs
+    # -----------------------------------------------------------------------
+
+    async def get_parking_ranges(
+        self, *, longitude: float, latitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", "/parking_ranges",
+            params={"longitude": longitude, "latitude": latitude},
+        )
+
+    async def get_near_operation_area(
+        self, *, longitude: float, latitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", "/nearOperationArea",
+            params={"longitude": longitude, "latitude": latitude},
+        )
+
+    async def get_at_operation_areas(
+        self, *, latitude: float, longitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", "/atoperationAreas",
+            params={"latitude": latitude, "longitude": longitude},
+        )
+
+    async def get_parking_detail(
+        self, *, parking_id: int, longitude: float, latitude: float
+    ) -> Any:
+        return await self._request(
+            "GET", f"/parking/{parking_id}/detail",
+            params={"longitude": longitude, "latitude": latitude},
+        )
+
+    async def get_bicycling_route(
+        self,
+        *,
+        origin_longitude: float,
+        origin_latitude: float,
+        destination_longitude: float,
+        destination_latitude: float,
+    ) -> Any:
+        return await self._request(
+            "GET", "/bicycling",
+            params={
+                "origin": f"{origin_longitude},{origin_latitude}",
+                "destination": f"{destination_longitude},{destination_latitude}",
+            },
+        )
+
+    async def in_fences(
+        self,
+        *,
+        points: str,
+        back_type: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        lock_status: str | None = None,
+        action_type: str | None = None,
+        yunjia_in_fence: int | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"points": points}
+        if back_type is not None:
+            params["back_type"] = back_type
+        if latitude is not None:
+            params["latitude"] = latitude
+        if longitude is not None:
+            params["longitude"] = longitude
+        if lock_status is not None:
+            params["lock_status"] = lock_status
+        if action_type is not None:
+            params["action_type"] = action_type
+        if yunjia_in_fence is not None:
+            params["yunjia_in_fence"] = yunjia_in_fence
+        return await self._request("GET", "/in_fences", params=params)
+
+    # -----------------------------------------------------------------------
+    # WebSocket payload builders
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def build_ws_car_location_payload(
+        *,
+        car_number: str,
+        longitude: float,
+        latitude: float,
+        timeout: int = 20000,
+    ) -> dict[str, Any]:
+        return {
+            "biz_id": WS_BIZ_IDS["car_location"],
+            "data": {
+                "number": car_number,
+                "longitude": longitude,
+                "latitude": latitude,
+            },
+            "timeout": timeout,
+        }
+
+    @staticmethod
+    def build_ws_in_fences_payload(
+        *,
+        points: str,
+        timeout: int = 20000,
+        back_type: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        lock_status: str | None = None,
+        action_type: str | None = None,
+        yunjia_in_fence: int | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"points": points}
+        if back_type is not None:
+            data["back_type"] = back_type
+        if latitude is not None:
+            data["latitude"] = latitude
+        if longitude is not None:
+            data["longitude"] = longitude
+        if lock_status is not None:
+            data["lock_status"] = lock_status
+        if action_type is not None:
+            data["action_type"] = action_type
+        if yunjia_in_fence is not None:
+            data["yunjia_in_fence"] = yunjia_in_fence
+        return {"biz_id": WS_BIZ_IDS["in_fences"], "data": data, "timeout": timeout}
+
+    @staticmethod
+    def build_ws_order_state_payload(
+        *,
+        timeout: int = 20000,
+        data: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "biz_id": WS_BIZ_IDS["order_state"],
+            "data": dict(data or {}),
+            "timeout": timeout,
+        }
+
+    # -----------------------------------------------------------------------
+    # Public generic request (escape hatch)
+    # -----------------------------------------------------------------------
+
+    async def request(
+        self,
+        *,
+        method: HttpMethod,
+        path: str,
+        service: str = "api",
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        allowed_status_codes: Iterable[int] | None = (200,),
+        timeout: float | None = None,
+    ) -> Any:
+        """Public wrapper around ``_request`` for ad-hoc calls."""
+        return await self._request(
+            method,
+            path,
+            service=service,
+            params=params,
+            json_body=json_body,
+            extra_headers=extra_headers,
+            allowed_status_codes=allowed_status_codes,
+            timeout=timeout,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Quick demo
+# ---------------------------------------------------------------------------
+
+async def main() -> None:
     async with SevenMaClient() as client:
-        pass
-        # 1. 测试发送验证码接口(done)
+        # 1. 发送验证码
         phone_number = "13800000000"  # 替换为你要测试的手机号
         response = await client.send_sms(phone_number)
         print(response)
-        # 2. 测试登录接口(done, 需要配合验证码接口)
+        # 2. 登录
         code = input("请输入验证码: ")
         token = await client.login_with_sms(phone_number, code)
         print(f"登录成功，token: {token}")
-        print(f"用户ID: {client.user_id}, 手机号: {client.phone_number}, 昵称: {client.nickname}, 学校: {client.school_name}")
+        print(
+            f"用户ID: {client.user_id}, 手机号: {client.phone_number}, "
+            f"昵称: {client.nickname}, 学校: {client.school_name}"
+        )
+
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())
