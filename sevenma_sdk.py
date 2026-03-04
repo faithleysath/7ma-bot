@@ -1,9 +1,5 @@
 """SevenMA Python SDK — single-file async version (curl_cffi)."""
 
-from __future__ import annotations
-
-from __future__ import annotations
-
 from collections.abc import Iterable, Mapping
 from curl_cffi.requests import AsyncSession
 from datetime import datetime
@@ -13,7 +9,7 @@ import json
 import time
 import random
 
-HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "TRACE", "PATCH"]
+type HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "TRACE", "PATCH"]
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +96,6 @@ def generate_trace_id() -> str:
 # ---------------------------------------------------------------------------
 
 WS_BIZ_IDS: dict[str, int] = {
-    "in_fences": 3004,
-    "order_state": 3005,
     "car_location": 3006,
 }
 
@@ -524,92 +518,6 @@ class SevenMaClient:
             params=params or None,
         )
 
-    async def get_car_detail(self, *, car_number: str) -> Any:
-        return await self._request("GET", f"/car/{car_number}")
-
-    async def get_car_lock_status(self, *, car_number: str) -> Any:
-        return await self._request("GET", f"/car/{car_number}/lockStatus")
-
-    async def get_user_car_authority(self) -> Any:
-        return await self._request("GET", "/user/car_authority")
-
-    # -----------------------------------------------------------------------
-    # Map / fence APIs
-    # -----------------------------------------------------------------------
-
-    async def get_parking_ranges(
-        self, *, longitude: float, latitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", "/parking_ranges",
-            params={"longitude": longitude, "latitude": latitude},
-        )
-
-    async def get_near_operation_area(
-        self, *, longitude: float, latitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", "/nearOperationArea",
-            params={"longitude": longitude, "latitude": latitude},
-        )
-
-    async def get_at_operation_areas(
-        self, *, latitude: float, longitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", "/atoperationAreas",
-            params={"latitude": latitude, "longitude": longitude},
-        )
-
-    async def get_parking_detail(
-        self, *, parking_id: int, longitude: float, latitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", f"/parking/{parking_id}/detail",
-            params={"longitude": longitude, "latitude": latitude},
-        )
-
-    async def get_bicycling_route(
-        self,
-        *,
-        origin_longitude: float,
-        origin_latitude: float,
-        destination_longitude: float,
-        destination_latitude: float,
-    ) -> Any:
-        return await self._request(
-            "GET", "/bicycling",
-            params={
-                "origin": f"{origin_longitude},{origin_latitude}",
-                "destination": f"{destination_longitude},{destination_latitude}",
-            },
-        )
-
-    async def in_fences(
-        self,
-        *,
-        points: str,
-        back_type: str | None = None,
-        latitude: float | None = None,
-        longitude: float | None = None,
-        lock_status: str | None = None,
-        action_type: str | None = None,
-        yunjia_in_fence: int | None = None,
-    ) -> Any:
-        params: dict[str, Any] = {"points": points}
-        if back_type is not None:
-            params["back_type"] = back_type
-        if latitude is not None:
-            params["latitude"] = latitude
-        if longitude is not None:
-            params["longitude"] = longitude
-        if lock_status is not None:
-            params["lock_status"] = lock_status
-        if action_type is not None:
-            params["action_type"] = action_type
-        if yunjia_in_fence is not None:
-            params["yunjia_in_fence"] = yunjia_in_fence
-        return await self._request("GET", "/in_fences", params=params)
 
     # -----------------------------------------------------------------------
     # WebSocket payload builders
@@ -633,44 +541,6 @@ class SevenMaClient:
             "timeout": timeout,
         }
 
-    @staticmethod
-    def build_ws_in_fences_payload(
-        *,
-        points: str,
-        timeout: int = 20000,
-        back_type: str | None = None,
-        latitude: float | None = None,
-        longitude: float | None = None,
-        lock_status: str | None = None,
-        action_type: str | None = None,
-        yunjia_in_fence: int | None = None,
-    ) -> dict[str, Any]:
-        data: dict[str, Any] = {"points": points}
-        if back_type is not None:
-            data["back_type"] = back_type
-        if latitude is not None:
-            data["latitude"] = latitude
-        if longitude is not None:
-            data["longitude"] = longitude
-        if lock_status is not None:
-            data["lock_status"] = lock_status
-        if action_type is not None:
-            data["action_type"] = action_type
-        if yunjia_in_fence is not None:
-            data["yunjia_in_fence"] = yunjia_in_fence
-        return {"biz_id": WS_BIZ_IDS["in_fences"], "data": data, "timeout": timeout}
-
-    @staticmethod
-    def build_ws_order_state_payload(
-        *,
-        timeout: int = 20000,
-        data: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "biz_id": WS_BIZ_IDS["order_state"],
-            "data": dict(data or {}),
-            "timeout": timeout,
-        }
 
     # -----------------------------------------------------------------------
     # Public generic request (escape hatch)
