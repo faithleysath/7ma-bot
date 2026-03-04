@@ -445,7 +445,7 @@ class SevenMaClient:
         allowed_status_codes: Iterable[int] | None = (200,),
         timeout: float | None = None,
         auth: bool = True,
-    ) -> Any:
+    ) -> JSONData:
         url = self._build_url(service, path)
         request_headers = self.auth_headers if auth else self.headers
         if extra_headers:
@@ -470,7 +470,7 @@ class SevenMaClient:
         if "genielamp-h-session" in resp.headers:
             self.genielamp_h_session = resp.headers["genielamp-h-session"]
 
-        payload = self._decode_response_payload(resp)
+        payload: JSONData = self._decode_response_payload(resp)
         business_code = self._extract_status_code(payload)
         message = self._extract_message(payload)
 
@@ -553,14 +553,27 @@ class SevenMaClient:
         raise ValueError(f"Unknown service '{service}', expected api/auth/absolute")
 
     @staticmethod
-    def _decode_response_payload(resp: Any) -> Any:
+    def _decode_response_payload(resp: Any) -> JSONData:
         try:
-            return resp.json()
+            parsed: Any = resp.json()
         except (ValueError, TypeError):
-            return {"http_status": resp.status_code, "raw_text": resp.text}
+            fallback: dict[str, Any] = {
+                "http_status": getattr(resp, "status_code", None),
+                "raw_text": getattr(resp, "text", ""),
+            }
+            return fallback
+
+        # Normalize unknown JSON payloads into a known JSONData shape.
+        if isinstance(parsed, dict):
+            return cast(dict[str, Any], parsed)
+        if isinstance(parsed, list):
+            return cast(list[Any], parsed)
+        if isinstance(parsed, str | int | float | bool) or parsed is None:
+            return parsed
+        return {"raw_payload": parsed}
 
     @staticmethod
-    def _extract_status_code(payload: Any) -> int | None:
+    def _extract_status_code(payload: JSONData) -> int | None:
         if not isinstance(payload, dict):
             return None
         d = cast(dict[str, Any], payload)
@@ -572,7 +585,7 @@ class SevenMaClient:
         return None
 
     @staticmethod
-    def _extract_message(payload: Any) -> str:
+    def _extract_message(payload: JSONData) -> str:
         if isinstance(payload, dict):
             d = cast(dict[str, Any], payload)
             msg = d.get("message")
@@ -581,10 +594,10 @@ class SevenMaClient:
         return ""
 
     @staticmethod
-    def _extract_data(payload: Any) -> Any:
+    def _extract_data(payload: JSONData) -> JSONData:
         if isinstance(payload, dict) and "data" in payload:
             d = cast(dict[str, Any], payload)
-            return d.get("data")
+            return cast(JSONData, d.get("data"))
         return payload
 
     def _save_token_from_payload(self, payload: Any) -> None:
