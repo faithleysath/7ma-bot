@@ -92,9 +92,9 @@ finally:
 
 ### 6.1 登录与鉴权
 
-- `send_sms(phone_number: str, scene: int = 1, sms_type: str = "login") -> SendSMSResponse`
+- `send_sms(phone_number: str, scene: int = 1, sms_type: SMSKind = "login") -> SendSMSData`
   - 发送短信验证码
-  - 默认允许业务状态码：`200`, `406`
+  - 默认只接受业务状态码 `200`，`406` 会抛 `APIStatusError`
 - `login_with_sms(phone_number: str, code: str, device_id: str = "", force_new_account: bool = False, restore_confirm: bool = False) -> str`
   - 短信验证码登录，成功返回 `token`
   - SDK 会自动调用 `set_token(...)`
@@ -103,17 +103,17 @@ finally:
 
 ### 6.2 验证码挑战（40301）
 
-- `captcha_generate(scene, device_id, login_key, client_info, captcha_type="slider") -> CaptchaGenerateResponse`
-- `captcha_verify(token, position, track, device_id, duration) -> CaptchaVerifyResponse`
-- `captcha_validate(verify_token, login_key) -> CaptchaValidateResponse`
+- `captcha_generate(scene, device_id, login_key, client_info, captcha_type="slider") -> CaptchaGenerateData`
+- `captcha_verify(token, position, track, device_id, duration) -> CaptchaVerifyData`
+- `captcha_validate(verify_token, login_key) -> CaptchaValidateData`
 
 说明：以上三个接口默认 `allowed_status_codes=None`，由调用方自行判断业务码与返回结构。
 
 ### 6.3 位置查询
 
-- `get_new_surrounding_cars(latitude: float, longitude: float) -> NewSurroundingCarsResponse`
-- `get_surrounding_cars(latitude: float, longitude: float) -> SurroundingCarsResponse`
-- `get_car_location(car_number: str, longitude: float | None = None, latitude: float | None = None) -> CarLocationResponse`
+- `get_new_surrounding_cars(latitude: float, longitude: float) -> NewSurroundingCarsData`
+- `get_surrounding_cars(latitude: float, longitude: float) -> SurroundingCarsData`
+- `get_car_location(car_number: str, longitude: float | None = None, latitude: float | None = None) -> CarLocationData`
 
 ### 6.4 WebSocket 负载构建
 
@@ -135,6 +135,7 @@ payload = SevenMaClient.build_ws_car_location_payload(
 - `request[T = Any](method, path, service="api", params=None, json_body=None, extra_headers=None, allowed_status_codes=(200,), timeout=None) -> T`
 
 适合 SDK 未封装的新接口临时调用。
+注意：`request[T]` 返回的是接口原始响应体，不会自动提取 `data`。
 
 - `service="api"` -> `base_url + path`
 - `service="auth"` -> `auth_base_url + path`
@@ -142,16 +143,24 @@ payload = SevenMaClient.build_ws_car_location_payload(
 
 ### 6.6 TypedDict 与泛型 request
 
-SDK 已内置主要接口的 `TypedDict`，包括（节选）：
+SDK 已内置主要接口的类型定义（`TypedDict` + 类型别名），包括（节选）：
 
-- `SendSMSRequest` / `SendSMSResponse`
+- `SendSMSRequest` / `SendSMSData`
 - `LoginWithSMSRequest` / `LoginWithSMSResponse` / `LoginWithSMSData`
 - `SharedKeyResponse`
-- `CaptchaGenerateRequest` / `CaptchaGenerateResponse`
-- `CaptchaVerifyRequest` / `CaptchaVerifyResponse`
-- `NewSurroundingCarsResponse` / `SurroundingCarsResponse`
-- `CarLocationResponse`
+- `CaptchaGenerateRequest` / `CaptchaGenerateData`
+- `CaptchaVerifyRequest` / `CaptchaVerifyData`
+- `NewSurroundingCarsData` / `SurroundingCarsData`
+- `CarLocationData`
 - `WSCarLocationPayload`
+
+字符串字面量约束（节选）：
+
+- `SMSKind = Literal["login"]`
+- `LoginKind = Literal["sms_code"]`
+- `CaptchaType = Literal["slider", "click"]`
+- `CaptchaScene = Literal["login"]`
+- `ServiceName = Literal["api", "auth", "absolute"]`
 
 如果你要调用 SDK 尚未封装的新接口，可以利用泛型 `request[T]` 在调用点声明返回类型：
 
@@ -212,9 +221,9 @@ except APIHTTPError as e:
 
 ## 8. 返回值约定
 
-- SDK 主要公开方法已使用 `TypedDict` 返回类型（见上文）
+- SDK 主要 API 方法默认返回 `data` 字段（而不是完整响应体）
 - `login_with_sms(...)` 返回 `str`（token）
-- `request[T]` 默认 `T = Any`，推荐在调用处显式标注 `T` 获得完整类型提示
+- `request[T]` 返回原始响应体，默认 `T = Any`，推荐在调用处显式标注 `T`
 
 ## 9. 注意事项
 

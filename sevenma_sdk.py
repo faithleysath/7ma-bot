@@ -12,6 +12,12 @@ import random
 
 type HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "TRACE", "PATCH"]
 type NumberLike = int | float | str
+type ServiceName = Literal["api", "auth", "absolute"]
+type SMSKind = Literal["login"]
+type LoginKind = Literal["sms_code"]
+type CaptchaType = Literal["slider", "click"]
+type CaptchaScene = Literal["login"]
+type JSONData = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 # ---------------------------------------------------------------------------
@@ -25,19 +31,19 @@ class APIStatusEnvelope(TypedDict, total=False):
 
 class SendSMSRequest(TypedDict):
     phone: str
-    type: str
+    type: SMSKind
     scene: int
 
 
 class SendSMSResponse(APIStatusEnvelope, total=False):
-    data: dict[str, Any] | list[Any] | str | int | float | bool | None
+    data: JSONData
 
 
 class LoginWithSMSRequest(TypedDict):
     phone: str
     code: str
     device_id: str
-    login_type: Literal["sms_code"]
+    login_type: LoginKind
     force_new_account: bool
     restore_confirm: bool
 
@@ -66,15 +72,15 @@ class CaptchaClientInfo(TypedDict, total=False):
 
 
 class CaptchaGenerateRequest(TypedDict):
-    scene: str
+    scene: CaptchaScene
     device_id: str
     login_key: str
     client_info: CaptchaClientInfo
-    type: str
+    type: CaptchaType
 
 
 class CaptchaGenerateData(TypedDict, total=False):
-    type: str
+    type: CaptchaType
     tips: str
     background_img: str
     slider_img: str
@@ -177,6 +183,12 @@ class WSCarLocationPayload(TypedDict):
     biz_id: int
     data: WSCarLocationData
     timeout: int
+
+
+type SendSMSData = JSONData
+type NewSurroundingCarsData = dict[str, NewSurroundingCarGroup]
+type SurroundingCarsData = list[SurroundingCarItem]
+type CaptchaValidateData = dict[str, Any] | None
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +438,7 @@ class SevenMaClient:
         method: HttpMethod,
         path: str,
         *,
-        service: str = "api",
+        service: ServiceName = "api",
         params: Mapping[str, Any] | None = None,
         json_body: Mapping[str, Any] | None = None,
         extra_headers: Mapping[str, str] | None = None,
@@ -502,9 +514,35 @@ class SevenMaClient:
 
         return payload
 
+    async def _request_data[T = Any](
+        self,
+        method: HttpMethod,
+        path: str,
+        *,
+        service: ServiceName = "api",
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        allowed_status_codes: Iterable[int] | None = (200,),
+        timeout: float | None = None,
+        auth: bool = True,
+    ) -> T:
+        payload = await self._request(
+            method,
+            path,
+            service=service,
+            params=params,
+            json_body=json_body,
+            extra_headers=extra_headers,
+            allowed_status_codes=allowed_status_codes,
+            timeout=timeout,
+            auth=auth,
+        )
+        return cast(T, self._extract_data(payload))
+
     # -- URL / response helpers ----------------------------------------------
 
-    def _build_url(self, service: str, path: str) -> str:
+    def _build_url(self, service: ServiceName, path: str) -> str:
         clean = path if path.startswith("/") else f"/{path}"
         if service == "api":
             return f"{self.base_url}{clean}"
@@ -542,6 +580,13 @@ class SevenMaClient:
                 return msg
         return ""
 
+    @staticmethod
+    def _extract_data(payload: Any) -> Any:
+        if isinstance(payload, dict) and "data" in payload:
+            d = cast(dict[str, Any], payload)
+            return d.get("data")
+        return payload
+
     def _save_token_from_payload(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
@@ -563,23 +608,20 @@ class SevenMaClient:
         phone_number: str,
         *,
         scene: int = 1,
-        sms_type: str = "login",
-    ) -> SendSMSResponse:
+        sms_type: SMSKind = "login",
+    ) -> SendSMSData:
         """发送短信验证码。"""
         payload: SendSMSRequest = {
             "phone": phone_number.replace(" ", ""),
             "type": sms_type,
             "scene": scene,
         }
-        return cast(
-            SendSMSResponse,
-            await self._request(
-                "POST", "/sms/send",
-                service="auth",
-                json_body=payload,
-                allowed_status_codes={200, 406},
-                auth=False,
-            ),
+        return await self._request_data(
+            "POST", "/sms/send",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes={200},
+            auth=False,
         )
 
     async def login_with_sms(
@@ -623,9 +665,10 @@ class SevenMaClient:
 
     async def get_shared_key(self) -> SharedKeyResponse:
         """获取共享密钥。"""
-        return cast(
-            SharedKeyResponse,
-            await self._request("GET", "/shared_key", service="auth"),
+        return await self._request_data(
+            "GET",
+            "/shared_key",
+            service="auth",
         )
 
     # -----------------------------------------------------------------------
@@ -635,12 +678,12 @@ class SevenMaClient:
     async def captcha_generate(
         self,
         *,
-        scene: str,
+        scene: CaptchaScene,
         device_id: str,
         login_key: str,
         client_info: CaptchaClientInfo,
-        captcha_type: str = "slider",
-    ) -> CaptchaGenerateResponse:
+        captcha_type: CaptchaType = "slider",
+    ) -> CaptchaGenerateData:
         payload: CaptchaGenerateRequest = {
             "scene": scene,
             "device_id": device_id,
@@ -648,14 +691,11 @@ class SevenMaClient:
             "client_info": client_info,
             "type": captcha_type,
         }
-        return cast(
-            CaptchaGenerateResponse,
-            await self._request(
-                "POST", "/captcha/polaris/captcha/generate",
-                service="auth",
-                json_body=payload,
-                allowed_status_codes=None,
-            ),
+        return await self._request_data(
+            "POST", "/captcha/polaris/captcha/generate",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes=None,
         )
 
     async def captcha_verify(
@@ -666,7 +706,7 @@ class SevenMaClient:
         track: list[CaptchaTrackPoint],
         device_id: str,
         duration: int,
-    ) -> CaptchaVerifyResponse:
+    ) -> CaptchaVerifyData:
         payload: CaptchaVerifyRequest = {
             "token": token,
             "position": position,
@@ -674,27 +714,21 @@ class SevenMaClient:
             "device_id": device_id,
             "duration": duration,
         }
-        return cast(
-            CaptchaVerifyResponse,
-            await self._request(
-                "POST", "/captcha/polaris/captcha/verify",
-                service="auth",
-                json_body=payload,
-                allowed_status_codes=None,
-            ),
+        return await self._request_data(
+            "POST", "/captcha/polaris/captcha/verify",
+            service="auth",
+            json_body=payload,
+            allowed_status_codes=None,
         )
 
     async def captcha_validate(
         self, *, verify_token: str, login_key: str
-    ) -> CaptchaValidateResponse:
-        return cast(
-            CaptchaValidateResponse,
-            await self._request(
-                "GET", "/captcha/validate",
-                service="auth",
-                params={"token": verify_token, "login_key": login_key},
-                allowed_status_codes=None,
-            ),
+    ) -> CaptchaValidateData:
+        return await self._request_data(
+            "GET", "/captcha/validate",
+            service="auth",
+            params={"token": verify_token, "login_key": login_key},
+            allowed_status_codes=None,
         )
 
     # -----------------------------------------------------------------------
@@ -703,26 +737,20 @@ class SevenMaClient:
 
     async def get_new_surrounding_cars(
         self, *, latitude: float, longitude: float
-    ) -> NewSurroundingCarsResponse:
+    ) -> NewSurroundingCarsData:
         params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
-        return cast(
-            NewSurroundingCarsResponse,
-            await self._request(
-                "GET", "/new/surrounding/car",
-                params=params,
-            ),
+        return await self._request_data(
+            "GET", "/new/surrounding/car",
+            params=params,
         )
 
     async def get_surrounding_cars(
         self, *, latitude: float, longitude: float
-    ) -> SurroundingCarsResponse:
+    ) -> SurroundingCarsData:
         params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
-        return cast(
-            SurroundingCarsResponse,
-            await self._request(
-                "GET", "/surrounding/car",
-                params=params,
-            ),
+        return await self._request_data(
+            "GET", "/surrounding/car",
+            params=params,
         )
 
     async def get_car_location(
@@ -731,18 +759,15 @@ class SevenMaClient:
         car_number: str,
         longitude: float | None = None,
         latitude: float | None = None,
-    ) -> CarLocationResponse:
+    ) -> CarLocationData:
         params: dict[str, Any] = {}
         if longitude is not None:
             params["longitude"] = longitude
         if latitude is not None:
             params["latitude"] = latitude
-        return cast(
-            CarLocationResponse,
-            await self._request(
-                "GET", f"/car/{car_number}/location",
-                params=params or None,
-            ),
+        return await self._request_data(
+            "GET", f"/car/{car_number}/location",
+            params=params or None,
         )
 
 
@@ -778,7 +803,7 @@ class SevenMaClient:
         *,
         method: HttpMethod,
         path: str,
-        service: str = "api",
+        service: ServiceName = "api",
         params: Mapping[str, Any] | None = None,
         json_body: Mapping[str, Any] | None = None,
         extra_headers: Mapping[str, str] | None = None,
