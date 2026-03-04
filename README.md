@@ -39,7 +39,7 @@ async def run():
         print("user_id:", client.user_id)
 
         # 3) 查询附近车辆
-        cars = await client.get_surrounding_cars(latitude=31.2304, longitude=121.4737)
+        cars = await client.get_new_surrounding_cars(latitude=31.2304, longitude=121.4737)
         print(cars)
 
 
@@ -93,7 +93,7 @@ finally:
 
 ### 6.1 登录与鉴权
 
-- `send_sms(phone_number: str, scene: int = 1, sms_type: SMSKind = "login") -> SendSMSData`
+- `send_sms(phone_number: str, scene: int = 1, sms_type: SMSKind = "login") -> JSONData`
   - 发送短信验证码
   - 默认只接受业务状态码 `200`，`406` 会抛 `APIStatusError`
 - `login_with_sms(phone_number: str, code: str, device_id: str = "", force_new_account: bool = False, restore_confirm: bool = False) -> str`
@@ -106,7 +106,7 @@ finally:
 
 - `captcha_generate(scene, device_id, login_key, client_info, captcha_type="slider") -> CaptchaGenerateData`
 - `captcha_verify(token, position, track, device_id, duration, login_key: str | None = None) -> CaptchaVerifyData`
-- `captcha_validate(verify_token, login_key) -> CaptchaValidateData`
+- `captcha_validate(verify_token, login_key) -> dict[str, Any] | None`
 
 说明：
 
@@ -119,7 +119,6 @@ finally:
 ### 6.3 位置查询
 
 - `get_new_surrounding_cars(latitude: float, longitude: float) -> NewSurroundingCarsData`
-- `get_surrounding_cars(latitude: float, longitude: float) -> SurroundingCarsData`
 - `get_car_location(car_number: str, longitude: float | None = None, latitude: float | None = None) -> CarLocationData`
 
 ### 6.4 WebSocket 负载构建
@@ -152,12 +151,12 @@ payload = SevenMaClient.build_ws_car_location_payload(
 
 SDK 已内置主要接口的类型定义（`TypedDict` + 类型别名），包括（节选）：
 
-- `SendSMSRequest` / `SendSMSData`
+- `SendSMSRequest`
 - `LoginWithSMSRequest` / `LoginWithSMSResponse` / `LoginWithSMSData`
 - `SharedKeyResponse`
 - `CaptchaGenerateRequest` / `CaptchaGenerateData`
 - `CaptchaVerifyRequest` / `CaptchaVerifyData`
-- `NewSurroundingCarsData` / `SurroundingCarsData`
+- `NewSurroundingCarsData`
 - `CarLocationData`
 - `WSCarLocationPayload`
 

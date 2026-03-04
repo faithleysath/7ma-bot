@@ -35,10 +35,6 @@ class SendSMSRequest(TypedDict):
     scene: int
 
 
-class SendSMSResponse(APIStatusEnvelope, total=False):
-    data: JSONData
-
-
 class LoginWithSMSRequest(TypedDict):
     phone: str
     code: str
@@ -88,12 +84,6 @@ class CaptchaGenerateData(TypedDict, total=False):
     token: str
 
 
-class CaptchaGenerateResponse(TypedDict, total=False):
-    code: int
-    message: str
-    data: CaptchaGenerateData
-
-
 class CaptchaPosition(TypedDict):
     x: NumberLike
     y: NumberLike
@@ -125,52 +115,50 @@ class CaptchaVerifyData(TypedDict, total=False):
     gateway_response: CaptchaGatewayValidateResult | None
 
 
-class CaptchaVerifyResponse(TypedDict, total=False):
-    code: int
-    message: str
-    data: CaptchaVerifyData
-
-
-class CaptchaValidateResponse(TypedDict, total=False):
-    code: int
-    status_code: int
-    message: str
-    data: dict[str, Any]
-
-
 class SurroundingCarsQuery(TypedDict):
     latitude: float
     longitude: float
 
 
-class SurroundingCarItem(TypedDict, total=False):
-    number: str
-    car_number: str
-    carmodel_id: int
-    latitude: NumberLike
-    longitude: NumberLike
+class BaseCarItem(TypedDict):
+    id: int  # 车辆唯一 ID
+    number: str  # 车身编号（业务主编号）
+    car_number: str  # 兼容字段：车辆编号
+    latitude: NumberLike  # 车辆纬度
+    longitude: NumberLike  # 车辆经度
+    vendor_lock_id: str  # 厂商锁编号
+    api_type: int  # 接口类型/数据源类型
+    lock_id: NumberLike  # 锁型号/锁类型 ID
+    battery_name: str  # 电池型号名称
+    distance: NumberLike  # 距离用户的距离（通常单位：米）
 
 
-class NewSurroundingCarGroup(TypedDict, total=False):
-    total: int
-    cars: list[SurroundingCarItem]
+class DancheCarItem(BaseCarItem):
+    carmodel_id: Literal[1]  # 车辆模型：单车
 
 
-class NewSurroundingCarsResponse(APIStatusEnvelope, total=False):
-    data: dict[str, NewSurroundingCarGroup]
+class ZhuliCarItem(BaseCarItem):
+    carmodel_id: Literal[2]  # 车辆模型：助力车
 
 
-class SurroundingCarsResponse(APIStatusEnvelope, total=False):
-    data: list[SurroundingCarItem]
+class DancheCarGroup(TypedDict):
+    total: int  # 单车总数
+    cars: list[DancheCarItem]  # 单车列表
+
+
+class ZhuliCarGroup(TypedDict):
+    total: int  # 助力车总数
+    cars: list[ZhuliCarItem]  # 助力车列表
+
+
+class NewSurroundingCarsData(TypedDict):
+    danche: DancheCarGroup  # 单车分组数据
+    zhuli: ZhuliCarGroup  # 助力车分组数据
 
 
 class CarLocationData(TypedDict, total=False):
     latitude: NumberLike
     longitude: NumberLike
-
-
-class CarLocationResponse(APIStatusEnvelope, total=False):
-    data: CarLocationData
 
 
 class WSCarLocationData(TypedDict):
@@ -183,12 +171,6 @@ class WSCarLocationPayload(TypedDict):
     biz_id: int
     data: WSCarLocationData
     timeout: int
-
-
-type SendSMSData = JSONData
-type NewSurroundingCarsData = dict[str, NewSurroundingCarGroup]
-type SurroundingCarsData = list[SurroundingCarItem]
-type CaptchaValidateData = dict[str, Any] | None
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +657,7 @@ class SevenMaClient:
         *,
         scene: int = 1,
         sms_type: SMSKind = "login",
-    ) -> SendSMSData:
+    ) -> JSONData:
         """发送短信验证码。"""
         payload: SendSMSRequest = {
             "phone": phone_number.replace(" ", ""),
@@ -856,7 +838,7 @@ class SevenMaClient:
 
     async def captcha_validate(
         self, *, verify_token: str, login_key: str
-    ) -> CaptchaValidateData:
+    ) -> dict[str, Any] | None:
         return await self._request_data(
             "GET", "/captcha/validate",
             service="auth",
@@ -875,15 +857,7 @@ class SevenMaClient:
         return await self._request_data(
             "GET", "/new/surrounding/car",
             params=params,
-        )
-
-    async def get_surrounding_cars(
-        self, *, latitude: float, longitude: float
-    ) -> SurroundingCarsData:
-        params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
-        return await self._request_data(
-            "GET", "/surrounding/car",
-            params=params,
+            auth=False,  # this endpoint seems to not require auth, or at least works without token
         )
 
     async def get_car_location(
@@ -975,7 +949,7 @@ class SevenMaClient:
 async def main() -> None:
     async with SevenMaClient() as client:
         # 1. 发送验证码
-        phone_number = "13800000000"  # 替换为你要测试的手机号
+        phone_number = "x"  # 替换为你要测试的手机号
         response = await client.send_sms(phone_number)
         print(response)
         # 2. 登录
@@ -987,8 +961,16 @@ async def main() -> None:
             f"昵称: {client.nickname}, 学校: {client.school_name}"
         )
 
+async def get_cars_demo() -> None:
+    async with SevenMaClient() as client:
+        latitude = 32.200905
+        longitude = 118.711972
+        # new surrounding cars
+        new_cars = await client.get_new_surrounding_cars(latitude=latitude, longitude=longitude)
+        print("New surrounding cars:", new_cars)
 
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(main())
+    # asyncio.run(main())
+    asyncio.run(get_cars_demo())
