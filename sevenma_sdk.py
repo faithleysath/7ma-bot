@@ -5,6 +5,7 @@ from curl_cffi.requests import AsyncSession
 from datetime import datetime
 from typing import Any, Literal, cast
 import base64
+import binascii
 import json
 import time
 import random
@@ -62,18 +63,31 @@ class RateLimitError(APIStatusError):
     """Raised when API signals rate limiting or temporary outage (429/600)."""
 
 
+class InvalidTokenError(SevenMAError):
+    """Raised when JWT format/payload is invalid."""
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
 def decode_jwt_payload(token: str) -> dict[str, Any]:
     """Decode JWT payload without signature verification."""
-    _, payload_b64, _ = token.split(".")
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise InvalidTokenError("Invalid JWT format: expected 3 segments")
+    payload_b64 = parts[1]
     missing_padding = len(payload_b64) % 4
     if missing_padding:
         payload_b64 += "=" * (4 - missing_padding)
-    payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
-    return json.loads(payload_json)
+    try:
+        payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
+        payload = json.loads(payload_json)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidTokenError("Invalid JWT payload") from exc
+    if not isinstance(payload, dict):
+        raise InvalidTokenError("Invalid JWT payload: expected JSON object")
+    return cast(dict[str, Any], payload)
 
 
 def generate_trace_id() -> str:
@@ -160,11 +174,20 @@ class SevenMaClient:
     # -- token helpers -------------------------------------------------------
 
     def set_token(self, token: str) -> None:
-        self.token = token
         payload = decode_jwt_payload(token)
+        exp_raw = payload.get("exp", 0)
+        exp_seconds = 0.0
+        if isinstance(exp_raw, int | float):
+            exp_seconds = float(exp_raw)
+        elif isinstance(exp_raw, str):
+            try:
+                exp_seconds = float(exp_raw.strip())
+            except ValueError:
+                exp_seconds = 0.0
+        self.token = token
         self.user_id = payload.get("user_id")
         self.phone_number = payload.get("phone")
-        self.token_expire_time_ms = int(cast(float, payload.get("exp", 0)) * 1000)
+        self.token_expire_time_ms = int(exp_seconds * 1000)
         self.username = payload.get("username")
         self.nickname = payload.get("nickname")
         self.school_name = payload.get("school_name")
@@ -172,6 +195,12 @@ class SevenMaClient:
     def clear_token(self) -> None:
         self.token = None
         self.token_expire_time_ms = None
+        self.user_id = None
+        self.phone_number = None
+        self.username = None
+        self.nickname = None
+        self.school_name = None
+        self.genielamp_h_session = None
 
     def is_token_expired(self, *, now_ms: int | None = None, leeway_ms: int = 0) -> bool:
         if not self.token:
@@ -191,7 +220,6 @@ class SevenMaClient:
             "phone-system": self.phone_system,
             "phone-brand": self.phone_brand,
             "client": self.client,
-            "u-user-id": str(random.randint(2900000, 3000000)),
             "x-app-id": self.x_app_id,
             "app-version": self.app_version,
             "user-agent": self.user_agent,
@@ -207,10 +235,12 @@ class SevenMaClient:
 
     @property
     def auth_headers(self) -> dict[str, str]:
-        return self.headers | {
-            "authorization": f"Bearer {self.token}" if self.token else "",
-            "u-user-id": str(self.user_id) if self.user_id else "",
-        }
+        headers = self.headers.copy()
+        if self.token:
+            headers["authorization"] = f"Bearer {self.token}"
+        if self.user_id is not None:
+            headers["u-user-id"] = str(self.user_id)
+        return headers
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -407,7 +437,7 @@ class SevenMaClient:
             "POST", "/login",
             service="auth",
             json_body=payload,
-            allowed_status_codes={200, 403001},
+            allowed_status_codes={200},
             auth=False,
         )
         self._save_token_from_payload(resp)
