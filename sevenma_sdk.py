@@ -152,8 +152,11 @@ class ZhuliCarGroup(TypedDict):
 
 
 class NewSurroundingCarsData(TypedDict):
-    danche: DancheCarGroup  # 单车分组数据
-    zhuli: ZhuliCarGroup  # 助力车分组数据
+    danche: DancheCarGroup | list[Any]  # 单车分组数据，有时可能是空数组
+    zhuli: ZhuliCarGroup | list[Any]  # 助力车分组数据，有时可能是空数组
+
+
+type NewSurroundingCarsResponse = NewSurroundingCarsData | list[Any] # 有可能返回空数组
 
 
 class CarLocationData(TypedDict, total=False):
@@ -852,7 +855,7 @@ class SevenMaClient:
 
     async def get_new_surrounding_cars(
         self, *, latitude: float, longitude: float
-    ) -> NewSurroundingCarsData:
+    ) -> NewSurroundingCarsResponse:
         params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
         return await self._request_data(
             "GET", "/new/surrounding/car",

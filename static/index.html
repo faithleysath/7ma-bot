@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>车辆分布选区规划工具 (Hexagonal Grid)</title>
+    
+    <!-- 引入 Tailwind CSS 进行界面美化 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 高德地图安全配置 (必须在加载 API 前设置) -->
+    <script>
+        window._AMapSecurityConfig = {
+            securityJsCode: '62e05d74c53bd6f9efb56e697ccd7b4b',
+        }
+    </script>
+    <!-- 引入高德地图 JS API v2.0，加载 MouseTool 和 GeometryUtil 插件 -->
+    <script src="https://webapi.amap.com/maps?v=2.0&key=02b33ddfba9a866050d7e9ef5ca57e9d&plugin=AMap.MouseTool,AMap.GeometryUtil"></script>
+    
+    <style>
+        #map-container {
+            width: 100%;
+            height: 100%;
+        }
+        /* 自定义高德地图的一些控件样式 */
+        .amap-logo, .amap-copyright {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="flex h-screen bg-gray-50 font-sans text-gray-800 overflow-hidden">
+
+    <!-- 左侧控制面板 -->
+    <div class="w-[420px] bg-white shadow-xl flex flex-col z-10 border-r border-gray-200">
+        <div class="p-5 bg-blue-600 text-white shrink-0">
+            <h1 class="text-xl font-bold flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                </svg>
+                高德选区网格规划器
+            </h1>
+            <p class="text-sm text-blue-100 mt-1">使用最优六边形蜂窝算法进行 100m 无缝覆盖</p>
+        </div>
+
+        <div class="p-5 flex-1 overflow-y-auto flex flex-col gap-5">
+            <!-- 绘制控制区 -->
+            <div class="space-y-3">
+                <div class="flex items-center gap-2">
+                    <label class="block text-sm font-medium text-gray-700 w-24">抓取半径(米)</label>
+                    <input type="number" id="radiusInput" value="100" class="flex-1 px-3 py-1.5 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div class="flex gap-2">
+                    <button id="btnDraw" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 px-3 rounded-md shadow transition duration-150">
+                        绘制多边形
+                    </button>
+                    <button id="btnClear" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold py-2 px-3 rounded-md shadow transition duration-150">
+                        清空
+                    </button>
+                </div>
+                <p id="statusText" class="text-xs text-gray-500 italic">请点击“绘制多边形”，然后在地图上单击描点，双击结束。</p>
+            </div>
+
+            <!-- 严格模式与选区导入导出 -->
+            <div class="space-y-3 pt-4 border-t border-gray-200">
+                <div class="flex items-start">
+                    <div class="flex items-center h-5">
+                        <input id="strictMode" type="checkbox" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    </div>
+                    <div class="ml-2 text-sm">
+                        <label for="strictMode" class="font-medium text-gray-700">严格模式 (仅保留内部点)</label>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">多边形边界数据</label>
+                    <textarea id="polygonIO" rows="2" class="w-full px-2 py-1.5 border border-gray-300 rounded-md shadow-sm font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="[[经度, 纬度], ...]"></textarea>
+                    <div class="flex gap-2 mt-2">
+                        <button id="btnExportPolygon" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold py-1.5 rounded-md transition duration-150">
+                            导出边界
+                        </button>
+                        <button id="btnImportPolygon" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold py-1.5 rounded-md transition duration-150">
+                            导入并生成
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 手动微调选点 -->
+            <div class="space-y-2 pt-4 border-t border-gray-200">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-sm font-bold text-gray-700">手动微调 (拖拽移动, 右键删除)</h3>
+                    <button id="btnAddMode" class="bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 text-xs font-semibold py-1 px-2 rounded transition duration-150">
+                        <span class="btn-text">开启新增模式</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 新增：车辆抓取模块 -->
+            <div class="space-y-3 pt-4 border-t border-emerald-200 bg-emerald-50 -mx-5 px-5 py-4">
+                <h3 class="text-sm font-bold text-emerald-800 flex items-center gap-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+                    </svg>
+                    实时获取车辆数据
+                </h3>
+                <div class="flex items-center gap-2">
+                    <label class="text-xs text-emerald-700 font-medium">请求间隔(毫秒)</label>
+                    <input type="number" id="fetchDelay" value="500" class="w-20 px-2 py-1 text-xs border border-emerald-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+                </div>
+                <button id="btnFetchCars" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold py-2 px-4 rounded-md shadow transition duration-150">
+                    开始扫描获取车辆
+                </button>
+                <div class="text-xs text-emerald-700 font-mono space-y-1">
+                    <div id="fetchProgress">等待扫描...</div>
+                    <div class="flex gap-3">
+                        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-400 border border-gray-600"></span> 单车: <b id="statDanche">0</b></span>
+                        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500 border border-gray-600"></span> 助力车: <b id="statZhuli">0</b></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- JSON 输出与导入区 -->
+            <div class="flex-1 flex flex-col pt-4 border-t border-gray-200">
+                <div class="flex justify-between items-center mb-1">
+                    <label class="block text-sm font-medium text-gray-700">圆心点阵 JSON</label>
+                    <span class="text-xs text-blue-600 font-bold bg-blue-100 px-2 py-0.5 rounded-full">共 <span id="pointCount">0</span> 点</span>
+                </div>
+                <textarea id="jsonOutput" class="w-full flex-1 min-h-[120px] p-2 border border-gray-300 rounded-md font-mono text-xs text-gray-600 bg-gray-50 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="[{&quot;longitude&quot;: 118.xx, &quot;latitude&quot;: 32.xx}, ...]"></textarea>
+                <div class="flex gap-2 mt-2">
+                    <button id="btnCopy" class="flex-1 bg-gray-800 hover:bg-gray-900 text-white text-xs font-semibold py-2 px-2 rounded-md shadow transition duration-150">
+                        复制 JSON
+                    </button>
+                    <!-- 新增：导入选点 JSON 功能 -->
+                    <button id="btnImportPoints" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 px-2 rounded-md shadow transition duration-150">
+                        导入点阵JSON
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧地图面板 -->
+    <div class="flex-1 relative">
+        <div id="map-container"></div>
+    </div>
+
+    <script>
+        // 1. 初始化地图
+        const map = new AMap.Map('map-container', {
+            zoom: 15,
+            center: [118.717000, 32.202000],
+            viewMode: '2D'
+        });
+
+        // 2. 初始化绘图工具和全局变量
+        const mouseTool = new AMap.MouseTool(map);
+        let currentPolygon = null;
+        let mapPoints = []; // 存储 {marker, circle} 对
+        let isAddMode = false; // 是否处于手动新增模式
+        
+        let carMarkers = []; // 存储所有车辆标记
+        let isFetching = false; // 车辆抓取状态
+        let fetchedCarIds = new Set(); // 车辆去重记录
+
+        // 3. 绘制事件监听
+        mouseTool.on('draw', function(event) {
+            currentPolygon = event.obj;
+            mouseTool.close(false); 
+            document.getElementById('statusText').innerText = "选区绘制完成，正在计算最优网格...";
+            calculateGrid();
+        });
+
+        // 4. 控制面板基础按钮绑定
+        document.getElementById('btnDraw').addEventListener('click', () => {
+            clearMap();
+            document.getElementById('statusText').innerText = "绘制中：在地图上单击描点，双击完成闭合...";
+            mouseTool.polygon({
+                strokeColor: "#2563eb", 
+                strokeOpacity: 1,
+                strokeWeight: 2,
+                fillColor: "#3b82f6",
+                fillOpacity: 0.2,
+                bubble: true
+            });
+        });
+
+        document.getElementById('btnClear').addEventListener('click', () => {
+            clearMap();
+            document.getElementById('statusText').innerText = "已清空。请点击“绘制多边形”开始。";
+        });
+
+        document.getElementById('btnCopy').addEventListener('click', () => {
+            const textarea = document.getElementById('jsonOutput');
+            textarea.select();
+            document.execCommand('copy');
+            
+            const btn = document.getElementById('btnCopy');
+            const originalText = btn.innerText;
+            btn.innerText = "复制成功！";
+            btn.classList.replace('bg-gray-800', 'bg-green-600');
+            setTimeout(() => {
+                btn.innerText = originalText;
+                btn.classList.replace('bg-green-600', 'bg-gray-800');
+            }, 2000);
+        });
+
+        // 导入选点阵列 JSON
+        document.getElementById('btnImportPoints').addEventListener('click', () => {
+            try {
+                const val = document.getElementById('jsonOutput').value.trim();
+                if (!val) { alert("请在文本框内粘贴点阵JSON数据"); return; }
+                const points = JSON.parse(val);
+                if (!Array.isArray(points)) throw new Error("数据最外层必须是数组 []");
+
+                // 清空旧数据（不清除多边形，保留参考）
+                mapPoints.forEach(p => { map.remove(p.circle); map.remove(p.marker); });
+                mapPoints = [];
+                
+                const R = parseFloat(document.getElementById('radiusInput').value) || 100;
+                points.forEach(pt => {
+                    if (pt.longitude && pt.latitude) {
+                        renderSinglePoint([pt.longitude, pt.latitude], R);
+                    }
+                });
+                outputJSONFromMarkers();
+                alert(`成功导入 ${mapPoints.length} 个网格点位！`);
+                
+                // 定位到第一个点
+                if (mapPoints.length > 0) {
+                    map.setCenter(mapPoints[0].marker.getPosition());
+                }
+            } catch (e) {
+                alert("选点 JSON 解析失败: " + e.message);
+            }
+        });
+
+        // 严格模式切换
+        document.getElementById('strictMode').addEventListener('change', () => {
+            if (currentPolygon) calculateGrid();
+        });
+
+        // 导出选区边界多边形
+        document.getElementById('btnExportPolygon').addEventListener('click', () => {
+            if (!currentPolygon) { alert("请先在地图上绘制选区！"); return; }
+            const path = currentPolygon.getPath().map(p => [Number(p.lng.toFixed(6)), Number(p.lat.toFixed(6))]);
+            const textarea = document.getElementById('polygonIO');
+            textarea.value = JSON.stringify(path);
+            textarea.select(); document.execCommand('copy');
+            const btn = document.getElementById('btnExportPolygon');
+            const originalText = btn.innerText;
+            btn.innerText = "已复制"; setTimeout(() => btn.innerText = originalText, 2000);
+        });
+
+        // 导入选区多边形
+        document.getElementById('btnImportPolygon').addEventListener('click', () => {
+            const val = document.getElementById('polygonIO').value.trim();
+            if (!val) { alert("请先粘贴选区多边形的 JSON 数据"); return; }
+            try {
+                const pathData = JSON.parse(val);
+                if (!Array.isArray(pathData) || pathData.length < 3) throw new Error("至少需要3个坐标点");
+                clearMap();
+                currentPolygon = new AMap.Polygon({
+                    path: pathData, strokeColor: "#2563eb", strokeOpacity: 1, strokeWeight: 2, fillColor: "#3b82f6", fillOpacity: 0.2, bubble: true
+                });
+                map.add(currentPolygon);
+                map.setFitView([currentPolygon]); 
+                document.getElementById('statusText').innerText = "选区导入成功并已计算最优网格！";
+                calculateGrid();
+            } catch (e) {
+                alert("解析失败，请确保格式为 [[经度, 纬度], ...]\n错误信息: " + e.message);
+            }
+        });
+
+        // 手动新增模式切换
+        const btnAddMode = document.getElementById('btnAddMode');
+        btnAddMode.addEventListener('click', () => {
+            isAddMode = !isAddMode;
+            if (isAddMode) {
+                btnAddMode.classList.replace('bg-amber-100', 'bg-amber-500');
+                btnAddMode.classList.replace('text-amber-800', 'text-white');
+                btnAddMode.querySelector('.btn-text').innerText = '关闭新增模式';
+                map.setDefaultCursor('crosshair');
+            } else {
+                btnAddMode.classList.replace('bg-amber-500', 'bg-amber-100');
+                btnAddMode.classList.replace('text-white', 'text-amber-800');
+                btnAddMode.querySelector('.btn-text').innerText = '开启新增模式';
+                map.setDefaultCursor('');
+            }
+        });
+
+        // 地图点击添加点
+        map.on('click', function(e) {
+            if (!isAddMode) return;
+            const R = parseFloat(document.getElementById('radiusInput').value) || 100;
+            renderSinglePoint([e.lnglat.lng, e.lnglat.lat], R);
+            outputJSONFromMarkers();
+        });
+
+        // 清空地图和数据
+        function clearMap() {
+            mouseTool.close(true); 
+            if (currentPolygon) { map.remove(currentPolygon); currentPolygon = null; }
+            mapPoints.forEach(p => { map.remove(p.circle); map.remove(p.marker); });
+            mapPoints = [];
+            
+            // 清理车辆
+            carMarkers.forEach(m => map.remove(m));
+            carMarkers = [];
+            fetchedCarIds.clear();
+            
+            document.getElementById('pointCount').innerText = "0";
+            document.getElementById('jsonOutput').value = "";
+        }
+
+        // 5. 核心算法：生成并过滤六边形网格
+        function calculateGrid() {
+            if (!currentPolygon) return;
+            mapPoints.forEach(p => { map.remove(p.circle); map.remove(p.marker); });
+            mapPoints = [];
+
+            const R = parseFloat(document.getElementById('radiusInput').value) || 100;
+            const path = currentPolygon.getPath();
+            const bounds = currentPolygon.getBounds();
+            
+            const minLng = bounds.getSouthWest().lng; const minLat = bounds.getSouthWest().lat;
+            const maxLng = bounds.getNorthEast().lng; const maxLat = bounds.getNorthEast().lat;
+
+            const midLat = (minLat + maxLat) / 2;
+            const metersPerLat = 111320;
+            const metersPerLng = 111320 * Math.cos(midLat * Math.PI / 180);
+
+            const dY = 1.5 * R; const dX = Math.sqrt(3) * R;
+            const stepLat = dY / metersPerLat; const stepLng = dX / metersPerLng;
+
+            const startLat = minLat - stepLat; const endLat = maxLat + stepLat;
+            const startLng = minLng - stepLng; const endLng = maxLng + stepLng;
+
+            const closedPath = [...path, path[0]];
+            const resultPoints = [];
+            let rowIndex = 0;
+            const isStrictMode = document.getElementById('strictMode').checked;
+
+            for (let lat = startLat; lat <= endLat; lat += stepLat) {
+                const shiftLng = (rowIndex % 2 !== 0) ? (stepLng / 2) : 0;
+                for (let lng = startLng; lng <= endLng; lng += stepLng) {
+                    const pt = [lng + shiftLng, lat];
+                    const isInside = AMap.GeometryUtil.isPointInRing(pt, path);
+                    if (isInside) {
+                        resultPoints.push(pt);
+                    } else if (!isStrictMode) {
+                        const distToBoundary = AMap.GeometryUtil.distanceToLine(pt, closedPath);
+                        if (distToBoundary <= R) resultPoints.push(pt);
+                    }
+                }
+                rowIndex++;
+            }
+
+            resultPoints.forEach(pt => renderSinglePoint(pt, R));
+            outputJSONFromMarkers();
+            document.getElementById('statusText').innerText = "计算完成！";
+        }
+
+        // 6. 渲染单个圆圈和中心点
+        function renderSinglePoint(pt, radius) {
+            const circle = new AMap.Circle({
+                center: pt, radius: radius,
+                strokeColor: "#f43f5e", strokeWeight: 1, strokeOpacity: 0.5,
+                fillColor: "#f43f5e", fillOpacity: 0.1, zIndex: 50, bubble: true
+            });
+
+            const marker = new AMap.Marker({
+                position: pt, anchor: 'center',
+                content: `<div class="w-2.5 h-2.5 bg-red-600 rounded-full border border-white shadow cursor-move hover:scale-125 transition-transform"></div>`,
+                zIndex: 100, draggable: true
+            });
+
+            marker.on('dragging', function(e) { circle.setCenter(e.lnglat); });
+            marker.on('dragend', function(e) { circle.setCenter(e.lnglat); outputJSONFromMarkers(); });
+            marker.on('rightclick', function() {
+                map.remove(circle); map.remove(marker);
+                mapPoints = mapPoints.filter(p => p.marker !== marker);
+                outputJSONFromMarkers();
+            });
+
+            map.add(circle); map.add(marker);
+            mapPoints.push({ marker, circle });
+        }
+
+        // 7. 输出 JSON
+        function outputJSONFromMarkers() {
+            const points = mapPoints.map(p => {
+                const pos = p.marker.getPosition();
+                return { longitude: Number(pos.lng.toFixed(6)), latitude: Number(pos.lat.toFixed(6)) };
+            });
+            document.getElementById('pointCount').innerText = points.length;
+            document.getElementById('jsonOutput').value = JSON.stringify(points, null, 2);
+        }
+
+        // 8. 车辆抓取核心逻辑
+        document.getElementById('btnFetchCars').addEventListener('click', async () => {
+            const btn = document.getElementById('btnFetchCars');
+            
+            // 点击停止
+            if (isFetching) {
+                isFetching = false;
+                btn.innerText = "开始扫描获取车辆";
+                btn.classList.replace('bg-red-600', 'bg-emerald-600');
+                document.getElementById('fetchProgress').innerText = "已手动终止扫描。";
+                return;
+            }
+            
+            if (mapPoints.length === 0) {
+                alert("没有网格中心点，请先生成或导入数据！");
+                return;
+            }
+
+            // 初始化重置状态
+            carMarkers.forEach(m => map.remove(m));
+            carMarkers = [];
+            fetchedCarIds.clear();
+            
+            isFetching = true;
+            btn.innerText = "停止扫描 (正在请求中...)";
+            btn.classList.replace('bg-emerald-600', 'bg-red-600');
+            
+            const delay = parseInt(document.getElementById('fetchDelay').value) || 500;
+            const progressEl = document.getElementById('fetchProgress');
+            const statDancheEl = document.getElementById('statDanche');
+            const statZhuliEl = document.getElementById('statZhuli');
+            
+            let dancheCount = 0;
+            let zhuliCount = 0;
+            statDancheEl.innerText = "0";
+            statZhuliEl.innerText = "0";
+
+            for (let i = 0; i < mapPoints.length; i++) {
+                if (!isFetching) break; // 如果触发了停止，中断循环
+                
+                const pointObj = mapPoints[i];
+                const pt = pointObj.marker.getPosition();
+                progressEl.innerText = `正在请求: ${i + 1} / ${mapPoints.length} ...`;
+                
+                // 将当前扫描的圆圈高亮显示为紫色
+                pointObj.circle.setOptions({ strokeColor: '#8b5cf6', fillColor: '#8b5cf6', fillOpacity: 0.3 });
+
+                try {
+                    // 调用本地代理网关接口，由 Python 后端 SDK 负责附加风控 Headers 并转发
+                    const res = await fetch(`/api/cars?latitude=${pt.lat}&longitude=${pt.lng}`);
+                    
+                    const json = await res.json();
+                    
+                    // 适配不同的返回结构 (可能带一层包装也可能不带)
+                    let data = json;
+                    if (json && json.data !== undefined) {
+                        data = json.data;
+                    }
+                    
+                    // 解析空数组或者有效数据字典
+                    if (Array.isArray(data) && data.length === 0) {
+                        // [] - 无车辆
+                    } else if (data && typeof data === 'object') {
+                        // 单车 { danche: {cars: []} }
+                        if (data.danche && Array.isArray(data.danche.cars)) {
+                            data.danche.cars.forEach(car => {
+                                if (!fetchedCarIds.has(car.number)) {
+                                    fetchedCarIds.add(car.number);
+                                    dancheCount++;
+                                    renderCar(car, 'danche');
+                                }
+                            });
+                        }
+                        // 助力车 { zhuli: {cars: []} }
+                        if (data.zhuli && Array.isArray(data.zhuli.cars)) {
+                            data.zhuli.cars.forEach(car => {
+                                if (!fetchedCarIds.has(car.number)) {
+                                    fetchedCarIds.add(car.number);
+                                    zhuliCount++;
+                                    renderCar(car, 'zhuli');
+                                }
+                            });
+                        }
+                    }
+                    // 更新数字看板
+                    statDancheEl.innerText = dancheCount;
+                    statZhuliEl.innerText = zhuliCount;
+
+                } catch (e) {
+                    console.error("抓取异常:", e);
+                }
+                
+                // 恢复圆圈原本的颜色
+                pointObj.circle.setOptions({ strokeColor: '#f43f5e', fillColor: '#f43f5e', fillOpacity: 0.1 });
+                
+                // 控制请求频率
+                if (i < mapPoints.length - 1) {
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+            
+            // 扫描结束
+            if (isFetching) { // 正常跑完
+                isFetching = false;
+                btn.innerText = "开始扫描获取车辆";
+                btn.classList.replace('bg-red-600', 'bg-emerald-600');
+                progressEl.innerText = "扫描完成！所有点位已处理。";
+            }
+        });
+
+        // 渲染单辆车到地图上
+        function renderCar(car, type) {
+            // 单车黄点，助力车绿点，加边框防止和底图混淆
+            const colorClass = type === 'danche' ? 'bg-yellow-400' : 'bg-green-500';
+            const marker = new AMap.Marker({
+                position: [car.longitude, car.latitude],
+                anchor: 'center',
+                content: `<div class="w-2.5 h-2.5 ${colorClass} rounded-full border border-gray-700 shadow-md"></div>`,
+                zIndex: 200, // zIndex 设置得比网格点(100)高，保证车不会被遮挡
+                title: `编号: ${car.number} \n类型: ${type === 'danche' ? '单车' : '助力车'}` // 鼠标悬停提示
+            });
+            map.add(marker);
+            carMarkers.push(marker);
+        }
+    </script>
+</body>
+</html>
