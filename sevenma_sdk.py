@@ -325,7 +325,9 @@ class SevenMaClient:
         self.auth_base_url = auth_base_url.rstrip("/")
         self.timeout = timeout
 
+        self._owns_session = session is None
         self.session = session or AsyncSession()
+        self._last_captcha_login_key: str | None = None
 
         self.token: str | None = token
         self.token_expire_time_ms: int | None = None
@@ -353,19 +355,23 @@ class SevenMaClient:
 
     def set_token(self, token: str) -> None:
         payload = decode_jwt_payload(token)
-        exp_raw = payload.get("exp", 0)
-        exp_seconds = 0.0
-        if isinstance(exp_raw, int | float):
+        exp_raw = payload.get("exp")
+        exp_seconds: float | None = None
+        if isinstance(exp_raw, int | float) and not isinstance(exp_raw, bool):
             exp_seconds = float(exp_raw)
         elif isinstance(exp_raw, str):
             try:
                 exp_seconds = float(exp_raw.strip())
             except ValueError:
-                exp_seconds = 0.0
+                exp_seconds = None
         self.token = token
         self.user_id = payload.get("user_id")
         self.phone_number = payload.get("phone")
-        self.token_expire_time_ms = int(exp_seconds * 1000)
+        self.token_expire_time_ms = (
+            int(exp_seconds * 1000)
+            if exp_seconds is not None and exp_seconds > 0
+            else None
+        )
         self.username = payload.get("username")
         self.nickname = payload.get("nickname")
         self.school_name = payload.get("school_name")
@@ -423,7 +429,8 @@ class SevenMaClient:
     # -- lifecycle -----------------------------------------------------------
 
     async def close(self) -> None:
-        await self.session.close()
+        if self._owns_session:
+            await self.session.close()
 
     async def __aenter__(self) -> "SevenMaClient":
         return self
@@ -597,6 +604,52 @@ class SevenMaClient:
             return cast(JSONData, payload.get("data"))
         return payload
 
+    @staticmethod
+    def _parse_expire_time_ms(value: Any) -> int | None:
+        if value is None or isinstance(value, bool):
+            return None
+
+        numeric_value: float | None = None
+        if isinstance(value, int | float):
+            numeric_value = float(value)
+        elif isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+
+            try:
+                numeric_value = float(raw)
+            except ValueError:
+                normalized = raw.replace("/", "-")
+                iso_candidate = normalized.replace(" ", "T")
+                if iso_candidate.endswith("Z"):
+                    iso_candidate = f"{iso_candidate[:-1]}+00:00"
+                dt: datetime | None = None
+                for candidate in (iso_candidate, normalized):
+                    try:
+                        dt = datetime.fromisoformat(candidate)
+                        break
+                    except ValueError:
+                        continue
+                if dt is None:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+                        try:
+                            dt = datetime.strptime(normalized, fmt)
+                            break
+                        except ValueError:
+                            continue
+                if dt is None:
+                    return None
+                return int(dt.timestamp() * 1000)
+        else:
+            return None
+
+        if numeric_value <= 0:
+            return None
+        if numeric_value >= 1_000_000_000_000:
+            return int(numeric_value)
+        return int(numeric_value * 1000)
+
     def _save_token_from_payload(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
@@ -608,6 +661,9 @@ class SevenMaClient:
         token = dd.get("token")
         if isinstance(token, str) and token:
             self.set_token(token)
+        expire_time_ms = self._parse_expire_time_ms(dd.get("expire_time"))
+        if expire_time_ms is not None:
+            self.token_expire_time_ms = expire_time_ms
 
     # -----------------------------------------------------------------------
     # Auth / login APIs
@@ -701,6 +757,7 @@ class SevenMaClient:
             "client_info": client_info,
             "type": captcha_type,
         }
+        self._last_captcha_login_key = login_key
         return await self._request_data(
             "POST", "/captcha/polaris/captcha/generate",
             service="auth",
@@ -716,7 +773,9 @@ class SevenMaClient:
         track: list[CaptchaTrackPoint],
         device_id: str,
         duration: int,
+        login_key: str | None = None,
     ) -> CaptchaVerifyData:
+        """校验验证码；有 login_key 时会自动补充网关 validate 结果。"""
         payload: CaptchaVerifyRequest = {
             "token": token,
             "position": position,
@@ -724,12 +783,76 @@ class SevenMaClient:
             "device_id": device_id,
             "duration": duration,
         }
-        return await self._request_data(
-            "POST", "/captcha/polaris/captcha/verify",
+        verify_data_raw = await self._request_data(
+            "POST",
+            "/captcha/polaris/captcha/verify",
             service="auth",
             json_body=payload,
             allowed_status_codes=None,
         )
+        if not isinstance(verify_data_raw, dict):
+            raise APIStatusError(
+                "Captcha verify response data is not an object",
+                payload=verify_data_raw,
+            )
+        verify_data = cast(CaptchaVerifyData, verify_data_raw)
+
+        key_for_validate = login_key or self._last_captcha_login_key
+        verify_token = verify_data.get("verify_token")
+        verify_success = bool(verify_data.get("success"))
+        if not (verify_success and isinstance(verify_token, str) and verify_token):
+            verify_data.setdefault("gateway_validated", False)
+            verify_data.setdefault("gateway_response", None)
+            return verify_data
+        if not key_for_validate:
+            verify_data["gateway_validated"] = False
+            verify_data["gateway_response"] = {
+                "code": -1,
+                "message": "missing_login_key",
+            }
+            return verify_data
+
+        gateway_response: CaptchaGatewayValidateResult | None = None
+        gateway_validated = False
+        try:
+            validate_payload = await self._request(
+                "GET",
+                "/captcha/validate",
+                service="auth",
+                params={"token": verify_token, "login_key": key_for_validate},
+                allowed_status_codes=None,
+            )
+            if isinstance(validate_payload, dict):
+                code_raw = validate_payload.get("code", validate_payload.get("status_code"))
+                code: int | None = None
+                if isinstance(code_raw, int) and not isinstance(code_raw, bool):
+                    code = code_raw
+                elif isinstance(code_raw, str):
+                    try:
+                        code = int(code_raw.strip())
+                    except ValueError:
+                        code = None
+                message_raw = validate_payload.get("message")
+                message = message_raw if isinstance(message_raw, str) else ""
+                gateway_response = {
+                    "code": code if code is not None else -1,
+                    "message": message,
+                }
+                gateway_validated = code in {0, 200}
+            else:
+                gateway_response = {
+                    "code": -1,
+                    "message": "gateway_validate_unexpected_payload",
+                }
+        except Exception:
+            gateway_response = {
+                "code": -1,
+                "message": "gateway_validate_error",
+            }
+
+        verify_data["gateway_validated"] = gateway_validated
+        verify_data["gateway_response"] = gateway_response
+        return verify_data
 
     async def captcha_validate(
         self, *, verify_token: str, login_key: str

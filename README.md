@@ -78,6 +78,7 @@ finally:
 
 - `set_token(token: str) -> None`
   - 解析 JWT payload 并同步写入 `user_id`、`phone_number`、`username`、`nickname`、`school_name`、`token_expire_time_ms`
+  - 若后续登录响应含 `expire_time`，SDK 会优先用它覆盖 `token_expire_time_ms`
 - `clear_token() -> None`
   - 清空 token 和用户相关状态
 - `is_token_expired(now_ms: int | None = None, leeway_ms: int = 0) -> bool`
@@ -104,10 +105,16 @@ finally:
 ### 6.2 验证码挑战（40301）
 
 - `captcha_generate(scene, device_id, login_key, client_info, captcha_type="slider") -> CaptchaGenerateData`
-- `captcha_verify(token, position, track, device_id, duration) -> CaptchaVerifyData`
+- `captcha_verify(token, position, track, device_id, duration, login_key: str | None = None) -> CaptchaVerifyData`
 - `captcha_validate(verify_token, login_key) -> CaptchaValidateData`
 
-说明：以上三个接口默认 `allowed_status_codes=None`，由调用方自行判断业务码与返回结构。
+说明：
+
+- 三个接口默认 `allowed_status_codes=None`，由调用方自行判断业务码与返回结构。
+- `captcha_verify` 在 `success=True` 且有 `verify_token` 时，会自动尝试执行网关 validate：
+  - 优先使用显式传入的 `login_key`
+  - 未传时回退使用最近一次 `captcha_generate(...)` 的 `login_key`
+  - 成功后会补充 `gateway_validated` 与 `gateway_response`
 
 ### 6.3 位置查询
 
