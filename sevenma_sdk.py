@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from curl_cffi.requests import AsyncSession
 from datetime import datetime
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 import base64
 import binascii
 import json
@@ -166,8 +166,8 @@ class CarLocationData(TypedDict, total=False):
 
 class WSCarLocationData(TypedDict):
     number: str
-    longitude: float
-    latitude: float
+    longitude: NotRequired[float]
+    latitude: NotRequired[float]
 
 
 class WSCarLocationPayload(TypedDict):
@@ -889,17 +889,19 @@ class SevenMaClient:
     def build_ws_car_location_payload(
         *,
         car_number: str,
-        longitude: float,
-        latitude: float,
+        longitude: float | None = None,
+        latitude: float | None = None,
         timeout: int = 20000,
     ) -> WSCarLocationPayload:
+        if (longitude is None) != (latitude is None):
+            raise ValueError("longitude and latitude must be provided together")
+        data: WSCarLocationData = {"number": car_number}
+        if longitude is not None and latitude is not None:
+            data["longitude"] = longitude
+            data["latitude"] = latitude
         return {
             "biz_id": WS_BIZ_IDS["car_location"],
-            "data": {
-                "number": car_number,
-                "longitude": longitude,
-                "latitude": latitude,
-            },
+            "data": data,
             "timeout": timeout,
         }
 
