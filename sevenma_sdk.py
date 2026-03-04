@@ -576,8 +576,7 @@ class SevenMaClient:
     def _extract_status_code(payload: JSONData) -> int | None:
         if not isinstance(payload, dict):
             return None
-        d = cast(dict[str, Any], payload)
-        value = d.get("status_code")
+        value = payload.get("status_code")
         if isinstance(value, int):
             return value
         if isinstance(value, str) and value.strip().isdigit():
@@ -587,8 +586,7 @@ class SevenMaClient:
     @staticmethod
     def _extract_message(payload: JSONData) -> str:
         if isinstance(payload, dict):
-            d = cast(dict[str, Any], payload)
-            msg = d.get("message")
+            msg = payload.get("message")
             if isinstance(msg, str):
                 return msg
         return ""
@@ -596,8 +594,7 @@ class SevenMaClient:
     @staticmethod
     def _extract_data(payload: JSONData) -> JSONData:
         if isinstance(payload, dict) and "data" in payload:
-            d = cast(dict[str, Any], payload)
-            return cast(JSONData, d.get("data"))
+            return cast(JSONData, payload.get("data"))
         return payload
 
     def _save_token_from_payload(self, payload: Any) -> None:
