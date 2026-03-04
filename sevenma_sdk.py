@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from curl_cffi.requests import AsyncSession
 from datetime import datetime
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 import base64
 import binascii
 import json
@@ -11,6 +11,172 @@ import time
 import random
 
 type HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "TRACE", "PATCH"]
+type NumberLike = int | float | str
+
+
+# ---------------------------------------------------------------------------
+# TypedDict models
+# ---------------------------------------------------------------------------
+
+class APIStatusEnvelope(TypedDict, total=False):
+    status_code: int
+    message: str
+
+
+class SendSMSRequest(TypedDict):
+    phone: str
+    type: str
+    scene: int
+
+
+class SendSMSResponse(APIStatusEnvelope, total=False):
+    data: dict[str, Any] | list[Any] | str | int | float | bool | None
+
+
+class LoginWithSMSRequest(TypedDict):
+    phone: str
+    code: str
+    device_id: str
+    login_type: Literal["sms_code"]
+    force_new_account: bool
+    restore_confirm: bool
+
+
+class LoginWithSMSData(TypedDict, total=False):
+    token: str
+    expire_time: str
+    session_key: str
+    openid: str
+
+
+class LoginWithSMSResponse(APIStatusEnvelope, total=False):
+    data: LoginWithSMSData
+
+
+class SharedKeyResponse(TypedDict, total=False):
+    session_id: int | str
+    socketKey: str
+    socketUrl: str
+
+
+class CaptchaClientInfo(TypedDict, total=False):
+    user_agent: str
+    screen: str
+    language: str
+
+
+class CaptchaGenerateRequest(TypedDict):
+    scene: str
+    device_id: str
+    login_key: str
+    client_info: CaptchaClientInfo
+    type: str
+
+
+class CaptchaGenerateData(TypedDict, total=False):
+    type: str
+    tips: str
+    background_img: str
+    slider_img: str
+    slider_y: NumberLike
+    token: str
+
+
+class CaptchaGenerateResponse(TypedDict, total=False):
+    code: int
+    message: str
+    data: CaptchaGenerateData
+
+
+class CaptchaPosition(TypedDict):
+    x: NumberLike
+    y: NumberLike
+
+
+class CaptchaTrackPoint(TypedDict):
+    x: NumberLike
+    y: NumberLike
+    t: int
+
+
+class CaptchaVerifyRequest(TypedDict):
+    token: str
+    position: CaptchaPosition
+    track: list[CaptchaTrackPoint]
+    device_id: str
+    duration: int
+
+
+class CaptchaGatewayValidateResult(TypedDict, total=False):
+    code: int
+    message: str
+
+
+class CaptchaVerifyData(TypedDict, total=False):
+    success: bool
+    verify_token: str
+    gateway_validated: bool
+    gateway_response: CaptchaGatewayValidateResult | None
+
+
+class CaptchaVerifyResponse(TypedDict, total=False):
+    code: int
+    message: str
+    data: CaptchaVerifyData
+
+
+class CaptchaValidateResponse(TypedDict, total=False):
+    code: int
+    status_code: int
+    message: str
+    data: dict[str, Any]
+
+
+class SurroundingCarsQuery(TypedDict):
+    latitude: float
+    longitude: float
+
+
+class SurroundingCarItem(TypedDict, total=False):
+    number: str
+    car_number: str
+    carmodel_id: int
+    latitude: NumberLike
+    longitude: NumberLike
+
+
+class NewSurroundingCarGroup(TypedDict, total=False):
+    total: int
+    cars: list[SurroundingCarItem]
+
+
+class NewSurroundingCarsResponse(APIStatusEnvelope, total=False):
+    data: dict[str, NewSurroundingCarGroup]
+
+
+class SurroundingCarsResponse(APIStatusEnvelope, total=False):
+    data: list[SurroundingCarItem]
+
+
+class CarLocationData(TypedDict, total=False):
+    latitude: NumberLike
+    longitude: NumberLike
+
+
+class CarLocationResponse(APIStatusEnvelope, total=False):
+    data: CarLocationData
+
+
+class WSCarLocationData(TypedDict):
+    number: str
+    longitude: float
+    latitude: float
+
+
+class WSCarLocationPayload(TypedDict):
+    biz_id: int
+    data: WSCarLocationData
+    timeout: int
 
 
 # ---------------------------------------------------------------------------
@@ -398,19 +564,22 @@ class SevenMaClient:
         *,
         scene: int = 1,
         sms_type: str = "login",
-    ) -> Any:
+    ) -> SendSMSResponse:
         """发送短信验证码。"""
-        payload: dict[str, Any] = {
+        payload: SendSMSRequest = {
             "phone": phone_number.replace(" ", ""),
             "type": sms_type,
             "scene": scene,
         }
-        return await self._request(
-            "POST", "/sms/send",
-            service="auth",
-            json_body=payload,
-            allowed_status_codes={200, 406},
-            auth=False,
+        return cast(
+            SendSMSResponse,
+            await self._request(
+                "POST", "/sms/send",
+                service="auth",
+                json_body=payload,
+                allowed_status_codes={200, 406},
+                auth=False,
+            ),
         )
 
     async def login_with_sms(
@@ -425,7 +594,7 @@ class SevenMaClient:
         """短信验证码登录，返回 token。"""
         if not device_id:
             device_id = self.phone_model + "_not_openid"
-        payload: dict[str, Any] = {
+        payload: LoginWithSMSRequest = {
             "phone": phone_number,
             "code": code,
             "device_id": device_id,
@@ -433,12 +602,15 @@ class SevenMaClient:
             "force_new_account": force_new_account,
             "restore_confirm": restore_confirm,
         }
-        resp = await self._request(
-            "POST", "/login",
-            service="auth",
-            json_body=payload,
-            allowed_status_codes={200},
-            auth=False,
+        resp = cast(
+            LoginWithSMSResponse,
+            await self._request(
+                "POST", "/login",
+                service="auth",
+                json_body=payload,
+                allowed_status_codes={200},
+                auth=False,
+            ),
         )
         self._save_token_from_payload(resp)
         token = self.token
@@ -449,9 +621,12 @@ class SevenMaClient:
             )
         return token
 
-    async def get_shared_key(self) -> Any:
+    async def get_shared_key(self) -> SharedKeyResponse:
         """获取共享密钥。"""
-        return await self._request("GET", "/shared_key", service="auth")
+        return cast(
+            SharedKeyResponse,
+            await self._request("GET", "/shared_key", service="auth"),
+        )
 
     # -----------------------------------------------------------------------
     # Captcha APIs (40301)
@@ -463,52 +638,63 @@ class SevenMaClient:
         scene: str,
         device_id: str,
         login_key: str,
-        client_info: Mapping[str, Any],
+        client_info: CaptchaClientInfo,
         captcha_type: str = "slider",
-    ) -> Any:
-        payload: dict[str, Any] = {
+    ) -> CaptchaGenerateResponse:
+        payload: CaptchaGenerateRequest = {
             "scene": scene,
             "device_id": device_id,
             "login_key": login_key,
-            "client_info": dict(client_info),
+            "client_info": client_info,
             "type": captcha_type,
         }
-        return await self._request(
-            "POST", "/captcha/polaris/captcha/generate",
-            service="auth",
-            json_body=payload,
-            allowed_status_codes=None,
+        return cast(
+            CaptchaGenerateResponse,
+            await self._request(
+                "POST", "/captcha/polaris/captcha/generate",
+                service="auth",
+                json_body=payload,
+                allowed_status_codes=None,
+            ),
         )
 
     async def captcha_verify(
         self,
         *,
         token: str,
-        position: Mapping[str, Any],
-        track: list[Mapping[str, Any]],
+        position: CaptchaPosition,
+        track: list[CaptchaTrackPoint],
         device_id: str,
         duration: int,
-    ) -> Any:
-        payload: dict[str, Any] = {
+    ) -> CaptchaVerifyResponse:
+        payload: CaptchaVerifyRequest = {
             "token": token,
-            "position": dict(position),
-            "track": [dict(item) for item in track],
+            "position": position,
+            "track": track,
             "device_id": device_id,
             "duration": duration,
         }
-        return await self._request(
-            "POST", "/captcha/polaris/captcha/verify",
-            service="auth",
-            json_body=payload,
-            allowed_status_codes=None,
+        return cast(
+            CaptchaVerifyResponse,
+            await self._request(
+                "POST", "/captcha/polaris/captcha/verify",
+                service="auth",
+                json_body=payload,
+                allowed_status_codes=None,
+            ),
         )
 
-    async def captcha_validate(self, *, verify_token: str, login_key: str) -> Any:
-        return await self._request(
-            "GET", "/captcha/validate",
-            service="auth",
-            params={"token": verify_token, "login_key": login_key},
-            allowed_status_codes=None,
+    async def captcha_validate(
+        self, *, verify_token: str, login_key: str
+    ) -> CaptchaValidateResponse:
+        return cast(
+            CaptchaValidateResponse,
+            await self._request(
+                "GET", "/captcha/validate",
+                service="auth",
+                params={"token": verify_token, "login_key": login_key},
+                allowed_status_codes=None,
+            ),
         )
 
     # -----------------------------------------------------------------------
@@ -517,18 +703,26 @@ class SevenMaClient:
 
     async def get_new_surrounding_cars(
         self, *, latitude: float, longitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", "/new/surrounding/car",
-            params={"latitude": latitude, "longitude": longitude},
+    ) -> NewSurroundingCarsResponse:
+        params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
+        return cast(
+            NewSurroundingCarsResponse,
+            await self._request(
+                "GET", "/new/surrounding/car",
+                params=params,
+            ),
         )
 
     async def get_surrounding_cars(
         self, *, latitude: float, longitude: float
-    ) -> Any:
-        return await self._request(
-            "GET", "/surrounding/car",
-            params={"latitude": latitude, "longitude": longitude},
+    ) -> SurroundingCarsResponse:
+        params: SurroundingCarsQuery = {"latitude": latitude, "longitude": longitude}
+        return cast(
+            SurroundingCarsResponse,
+            await self._request(
+                "GET", "/surrounding/car",
+                params=params,
+            ),
         )
 
     async def get_car_location(
@@ -537,15 +731,18 @@ class SevenMaClient:
         car_number: str,
         longitude: float | None = None,
         latitude: float | None = None,
-    ) -> Any:
+    ) -> CarLocationResponse:
         params: dict[str, Any] = {}
         if longitude is not None:
             params["longitude"] = longitude
         if latitude is not None:
             params["latitude"] = latitude
-        return await self._request(
-            "GET", f"/car/{car_number}/location",
-            params=params or None,
+        return cast(
+            CarLocationResponse,
+            await self._request(
+                "GET", f"/car/{car_number}/location",
+                params=params or None,
+            ),
         )
 
 
@@ -560,7 +757,7 @@ class SevenMaClient:
         longitude: float,
         latitude: float,
         timeout: int = 20000,
-    ) -> dict[str, Any]:
+    ) -> WSCarLocationPayload:
         return {
             "biz_id": WS_BIZ_IDS["car_location"],
             "data": {
@@ -576,7 +773,7 @@ class SevenMaClient:
     # Public generic request (escape hatch)
     # -----------------------------------------------------------------------
 
-    async def request(
+    async def request[T = Any](
         self,
         *,
         method: HttpMethod,
@@ -587,17 +784,29 @@ class SevenMaClient:
         extra_headers: Mapping[str, str] | None = None,
         allowed_status_codes: Iterable[int] | None = (200,),
         timeout: float | None = None,
-    ) -> Any:
-        """Public wrapper around ``_request`` for ad-hoc calls."""
-        return await self._request(
-            method,
-            path,
-            service=service,
-            params=params,
-            json_body=json_body,
-            extra_headers=extra_headers,
-            allowed_status_codes=allowed_status_codes,
-            timeout=timeout,
+    ) -> T:
+        """Public generic wrapper around ``_request`` for ad-hoc calls.
+
+        Example:
+            response: LoginWithSMSResponse = await client.request(
+                method="POST",
+                path="/login",
+                service="auth",
+                json_body={...},
+            )
+        """
+        return cast(
+            T,
+            await self._request(
+                method,
+                path,
+                service=service,
+                params=params,
+                json_body=json_body,
+                extra_headers=extra_headers,
+                allowed_status_codes=allowed_status_codes,
+                timeout=timeout,
+            ),
         )
 
 
